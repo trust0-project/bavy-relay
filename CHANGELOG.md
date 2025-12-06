@@ -8,6 +8,13 @@
 
 - Javier Ribó
 
+## 0.1.0 (2025-12-06)
+
+
+### Bug Fixes
+
+* release ([425b165](https://github.com/trust0-project/bavy-relay/commit/425b165ab1adfce09c6df6ad63353620de3addae))
+
 ## 0.1.3 (2025-12-02)
 
 This was a version bump only for relay to align it with other projects, there were no code changes.
