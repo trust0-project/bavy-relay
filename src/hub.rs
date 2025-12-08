@@ -200,12 +200,48 @@ impl Hub {
 
             // Route to internal peer
             if let Some(target_peer) = peers.peer_id_by_ip(&dst_ip) {
+                // Log TCP packets being routed between VMs with full details
+                // TCP header starts at byte 34 (14 eth + 20 IP) for standard IP
+                if ethernet_frame.len() >= 54 && ethernet_frame[23] == 6 {
+                    let src_port = u16::from_be_bytes([ethernet_frame[34], ethernet_frame[35]]);
+                    let dst_port = u16::from_be_bytes([ethernet_frame[36], ethernet_frame[37]]);
+                    let seq_num = u32::from_be_bytes([ethernet_frame[38], ethernet_frame[39], ethernet_frame[40], ethernet_frame[41]]);
+                    let ack_num = u32::from_be_bytes([ethernet_frame[42], ethernet_frame[43], ethernet_frame[44], ethernet_frame[45]]);
+                    let tcp_flags = ethernet_frame[47];
+                    
+                    let flag_str = if tcp_flags & 0x02 != 0 && tcp_flags & 0x10 != 0 {
+                        "SYN-ACK"
+                    } else if tcp_flags & 0x02 != 0 {
+                        "SYN"
+                    } else if tcp_flags & 0x04 != 0 {
+                        "RST"
+                    } else if tcp_flags & 0x01 != 0 && tcp_flags & 0x10 != 0 {
+                        "FIN-ACK"
+                    } else if tcp_flags & 0x01 != 0 {
+                        "FIN"
+                    } else if tcp_flags & 0x10 != 0 {
+                        "ACK"
+                    } else {
+                        "OTHER"
+                    };
+                    
+                    tracing::info!(
+                        "TCP {} peer{}->peer{} port {}->{} seq={} ack={}",
+                        flag_str, from_peer, target_peer, src_port, dst_port, seq_num, ack_num
+                    );
+                }
                 drop(peers);
                 if target_peer != from_peer {
                     self.send_to_peer(target_peer, encode_data_frame(ethernet_frame))
                         .await;
                 }
                 return;
+            } else {
+                // Log when target peer is not found
+                tracing::warn!(
+                    "No peer found for internal IP {}.{}.{}.{}",
+                    dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]
+                );
             }
         }
 
