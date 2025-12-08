@@ -8,6 +8,13 @@
 
 - Javier Ribó
 
+## [0.1.1](https://github.com/trust0-project/bavy-relay/compare/v0.1.0...v0.1.1) (2025-12-08)
+
+
+### Bug Fixes
+
+* improve relay service ([308e76c](https://github.com/trust0-project/bavy-relay/commit/308e76cb6482d110724ed836fdc1edc94f4dd1b3))
+
 ## 0.1.0 (2025-12-06)
 
 
