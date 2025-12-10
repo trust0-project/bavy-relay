@@ -33,7 +33,7 @@ const QUIC_MAX_IDLE_TIMEOUT_SECS: u64 = 180;
 
 use crate::hub::{Hub, PeerMessage};
 use crate::peer::PeerId;
-use crate::protocol::{ControlMessage, MSG_TYPE_CONTROL, encode_data_frame};
+use crate::protocol::{ControlMessage, MSG_TYPE_CONTROL};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -372,7 +372,7 @@ async fn broadcast_response(hub: &Hub, ethernet_frame: &[u8]) {
     if let Some(peer) = peers.find_by_mac(&dst_mac) {
         let peer_id = peer.id;
         drop(peers);
-        hub.send_to_peer(peer_id, encode_data_frame(ethernet_frame))
-            .await;
+        // Use chunked sending for large frames
+        hub.send_frame_to_peer(peer_id, ethernet_frame).await;
     }
 }

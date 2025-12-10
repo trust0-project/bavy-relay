@@ -11,6 +11,15 @@ use serde::{Deserialize, Serialize};
 /// Message type prefix bytes
 pub const MSG_TYPE_CONTROL: u8 = 0x00;
 pub const MSG_TYPE_DATA: u8 = 0x01;
+/// Chunked data frame for large packets that exceed QUIC datagram limits
+pub const MSG_TYPE_CHUNKED: u8 = 0x02;
+
+/// Maximum safe chunk payload size (leave room for QUIC overhead)
+/// QUIC datagrams are typically limited to ~1200 bytes
+pub const MAX_CHUNK_PAYLOAD: usize = 900;
+
+/// Threshold for chunking - frames larger than this will be chunked
+pub const CHUNK_THRESHOLD: usize = 950;
 
 /// Network configuration constants
 pub const GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];
@@ -102,6 +111,77 @@ pub fn format_mac(mac: &[u8; 6]) -> String {
 /// Helper to format IP address for display
 pub fn format_ip(ip: &[u8; 4]) -> String {
     format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+}
+
+/// Chunked frame header:
+/// [MSG_TYPE_CHUNKED] [chunk_id: u16 BE] [chunk_index: u8] [total_chunks: u8] [payload...]
+/// Total header size: 5 bytes
+
+/// Encode a large Ethernet frame as multiple chunks
+/// Returns a vector of chunk datagrams ready to send
+pub fn encode_chunked_frame(ethernet_frame: &[u8], chunk_id: u16) -> Vec<Vec<u8>> {
+    let total_chunks = (ethernet_frame.len() + MAX_CHUNK_PAYLOAD - 1) / MAX_CHUNK_PAYLOAD;
+    let total_chunks = total_chunks.min(255) as u8; // Cap at 255 chunks
+    
+    let mut chunks = Vec::new();
+    
+    for (i, chunk_data) in ethernet_frame.chunks(MAX_CHUNK_PAYLOAD).enumerate() {
+        let mut frame = Vec::with_capacity(5 + chunk_data.len());
+        frame.push(MSG_TYPE_CHUNKED);
+        frame.extend(&chunk_id.to_be_bytes());
+        frame.push(i as u8);
+        frame.push(total_chunks);
+        frame.extend(chunk_data);
+        chunks.push(frame);
+    }
+    
+    chunks
+}
+
+/// Decoded chunk information
+#[derive(Debug, Clone)]
+pub struct ChunkInfo {
+    pub chunk_id: u16,
+    pub chunk_index: u8,
+    pub total_chunks: u8,
+    pub payload: Vec<u8>,
+}
+
+/// Decode a chunked frame header
+/// Returns None if the data is too short or malformed
+pub fn decode_chunk(data: &[u8]) -> Option<ChunkInfo> {
+    if data.len() < 5 {
+        return None;
+    }
+    if data[0] != MSG_TYPE_CHUNKED {
+        return None;
+    }
+    
+    let chunk_id = u16::from_be_bytes([data[1], data[2]]);
+    let chunk_index = data[3];
+    let total_chunks = data[4];
+    let payload = data[5..].to_vec();
+    
+    Some(ChunkInfo {
+        chunk_id,
+        chunk_index,
+        total_chunks,
+        payload,
+    })
+}
+
+/// Smart frame encoder: uses chunking only if needed
+/// Returns datagrams ready to send (either single frame or multiple chunks)
+pub fn encode_frame_smart(ethernet_frame: &[u8], chunk_id_counter: &mut u16) -> Vec<Vec<u8>> {
+    if ethernet_frame.len() <= CHUNK_THRESHOLD {
+        // Small frame - send directly
+        vec![encode_data_frame(ethernet_frame)]
+    } else {
+        // Large frame - chunk it
+        let id = *chunk_id_counter;
+        *chunk_id_counter = chunk_id_counter.wrapping_add(1);
+        encode_chunked_frame(ethernet_frame, id)
+    }
 }
 
 #[cfg(test)]

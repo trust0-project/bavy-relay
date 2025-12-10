@@ -5,15 +5,19 @@
 //! - Ethernet frame routing between peers
 //! - ARP handling for the virtual gateway
 //! - Forwarding external traffic to the proxy
+//! - Chunked frame reassembly for large packets
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Instant;
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 use crate::peer::{PeerId, PeerManager};
 use crate::protocol::{
-    ControlMessage, DNS_SERVER, GATEWAY_IP, GATEWAY_MAC, MSG_TYPE_CONTROL, MSG_TYPE_DATA,
-    NETWORK_MASK, encode_data_frame, format_ip, format_mac,
+    ControlMessage, DNS_SERVER, GATEWAY_IP, GATEWAY_MAC, MSG_TYPE_CHUNKED,
+    MSG_TYPE_CONTROL, MSG_TYPE_DATA, NETWORK_MASK, decode_chunk, encode_data_frame,
+    encode_frame_smart, format_ip, format_mac,
 };
 use crate::proxy::ExternalProxy;
 
@@ -26,6 +30,17 @@ pub enum PeerMessage {
     Disconnect,
 }
 
+/// State for reassembling chunked frames
+struct ChunkReassembly {
+    chunks: Vec<Option<Vec<u8>>>,
+    total_chunks: u8,
+    received_count: u8,
+    created: Instant,
+}
+
+/// Key for identifying chunks from a specific peer
+type ChunkKey = (PeerId, u16); // (peer_id, chunk_id)
+
 /// The central hub that manages all peer connections and routing
 pub struct Hub {
     /// Peer manager (shared state)
@@ -36,6 +51,10 @@ pub struct Hub {
     proxy: Arc<ExternalProxy>,
     /// Broadcast channel for frames (used for broadcasting)
     broadcast_tx: broadcast::Sender<(PeerId, Vec<u8>)>,
+    /// Chunk reassembly buffer
+    chunk_buffer: Arc<Mutex<HashMap<ChunkKey, ChunkReassembly>>>,
+    /// Counter for generating chunk IDs when sending
+    chunk_id_counter: AtomicU16,
 }
 
 impl Hub {
@@ -46,6 +65,8 @@ impl Hub {
             peer_senders: Arc::new(RwLock::new(HashMap::new())),
             proxy: Arc::new(ExternalProxy::new()),
             broadcast_tx,
+            chunk_buffer: Arc::new(Mutex::new(HashMap::new())),
+            chunk_id_counter: AtomicU16::new(0),
         }
     }
 
@@ -120,9 +141,81 @@ impl Hub {
             MSG_TYPE_DATA => {
                 self.route_data_frame(from_peer, &data[1..]).await;
             }
+            MSG_TYPE_CHUNKED => {
+                // Handle chunked frame - reassemble and route when complete
+                if let Some(frame) = self.reassemble_chunk(from_peer, &data).await {
+                    self.route_data_frame(from_peer, &frame).await;
+                }
+            }
             _ => {
                 tracing::warn!("Unknown message type: {}", data[0]);
             }
+        }
+    }
+
+    /// Reassemble chunked frames
+    /// Returns the complete Ethernet frame when all chunks are received
+    async fn reassemble_chunk(&self, from_peer: PeerId, data: &[u8]) -> Option<Vec<u8>> {
+        let chunk_info = decode_chunk(data)?;
+        
+        let key = (from_peer, chunk_info.chunk_id);
+        let mut buffer = self.chunk_buffer.lock().await;
+        
+        // Clean up old reassembly buffers (older than 5 seconds)
+        let now = Instant::now();
+        buffer.retain(|_, v| now.duration_since(v.created).as_secs() < 5);
+        
+        // Get or create reassembly state
+        let reassembly = buffer.entry(key).or_insert_with(|| ChunkReassembly {
+            chunks: vec![None; chunk_info.total_chunks as usize],
+            total_chunks: chunk_info.total_chunks,
+            received_count: 0,
+            created: now,
+        });
+        
+        // Validate chunk index
+        let idx = chunk_info.chunk_index as usize;
+        if idx >= reassembly.chunks.len() {
+            tracing::warn!("Invalid chunk index {} for chunk_id {}", idx, chunk_info.chunk_id);
+            return None;
+        }
+        
+        // Store chunk if not already received
+        if reassembly.chunks[idx].is_none() {
+            reassembly.chunks[idx] = Some(chunk_info.payload);
+            reassembly.received_count += 1;
+            
+            tracing::trace!(
+                "Received chunk {}/{} for id {} from peer {}",
+                idx + 1,
+                reassembly.total_chunks,
+                chunk_info.chunk_id,
+                from_peer
+            );
+        }
+        
+        // Check if all chunks received
+        if reassembly.received_count == reassembly.total_chunks {
+            // Assemble the complete frame
+            let mut complete_frame = Vec::new();
+            for chunk in &reassembly.chunks {
+                if let Some(data) = chunk {
+                    complete_frame.extend(data);
+                }
+            }
+            
+            // Remove from buffer
+            buffer.remove(&key);
+            
+            tracing::debug!(
+                "Reassembled chunked frame: {} bytes from {} chunks",
+                complete_frame.len(),
+                chunk_info.total_chunks
+            );
+            
+            Some(complete_frame)
+        } else {
+            None
         }
     }
 
@@ -168,8 +261,7 @@ impl Hub {
         // Handle ARP for gateway
         if ethertype == 0x0806 && self.is_arp_request_for_gateway(ethernet_frame) {
             let reply = self.generate_arp_reply(ethernet_frame);
-            self.send_to_peer(from_peer, encode_data_frame(&reply))
-                .await;
+            self.send_frame_to_peer(from_peer, &reply).await;
             return;
         }
 
@@ -180,8 +272,7 @@ impl Hub {
             // Check if destination is gateway (ping to gateway)
             if dst_ip == GATEWAY_IP {
                 if let Some(reply) = self.handle_gateway_packet(ethernet_frame).await {
-                    self.send_to_peer(from_peer, encode_data_frame(&reply))
-                        .await;
+                    self.send_frame_to_peer(from_peer, &reply).await;
                 }
                 return;
             }
@@ -192,8 +283,7 @@ impl Hub {
                 drop(peers);
                 // Route to external proxy
                 if let Some(reply) = self.proxy.handle_external_packet(ethernet_frame).await {
-                    self.send_to_peer(from_peer, encode_data_frame(&reply))
-                        .await;
+                    self.send_frame_to_peer(from_peer, &reply).await;
                 }
                 return;
             }
@@ -232,7 +322,7 @@ impl Hub {
                 }
                 drop(peers);
                 if target_peer != from_peer {
-                    self.send_to_peer(target_peer, encode_data_frame(ethernet_frame))
+                    self.send_frame_to_peer(target_peer, ethernet_frame)
                         .await;
                 }
                 return;
@@ -259,17 +349,33 @@ impl Hub {
             if let Some(peer) = peers.find_by_mac(&dst_mac) {
                 let target_id = peer.id;
                 drop(peers);
-                self.send_to_peer(target_id, encode_data_frame(ethernet_frame))
+                self.send_frame_to_peer(target_id, ethernet_frame)
                     .await;
             }
         }
     }
 
     /// Send a message to a specific peer
+    /// Automatically chunks large frames to fit QUIC datagram limits
     pub async fn send_to_peer(&self, peer_id: PeerId, data: Vec<u8>) {
         let senders = self.peer_senders.read().await;
         if let Some(sender) = senders.get(&peer_id) {
             let _ = sender.send(PeerMessage::Send(data)).await;
+        }
+    }
+
+    /// Send an Ethernet frame to a peer, with automatic chunking for large frames
+    pub async fn send_frame_to_peer(&self, peer_id: PeerId, ethernet_frame: &[u8]) {
+        let mut counter = self.chunk_id_counter.fetch_add(1, Ordering::Relaxed);
+        let datagrams = encode_frame_smart(ethernet_frame, &mut counter);
+        
+        let senders = self.peer_senders.read().await;
+        if let Some(sender) = senders.get(&peer_id) {
+            for datagram in datagrams {
+                if sender.send(PeerMessage::Send(datagram)).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 
