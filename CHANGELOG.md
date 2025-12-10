@@ -8,6 +8,13 @@
 
 - Javier Ribó
 
+## [0.1.2](https://github.com/trust0-project/bavy-relay/compare/v0.1.1...v0.1.2) (2025-12-10)
+
+
+### Bug Fixes
+
+* improve webTransport + quic integration by chunking payloads ([8250a55](https://github.com/trust0-project/bavy-relay/commit/8250a55b780ffdf78886a600adc1529befb10549))
+
 ## [0.1.1](https://github.com/trust0-project/bavy-relay/compare/v0.1.0...v0.1.1) (2025-12-08)
 
 
