@@ -5,7 +5,7 @@
 set -e
 
 CERTS_DIR="${1:-./certs}"
-VALIDITY_DAYS=14  # Chrome requires ≤14 days for serverCertificateHashes
+VALIDITY_DAYS=320  # Chrome requires ≤14 days for serverCertificateHashes
 
 echo "Generating WebTransport certificates..."
 echo "Output directory: $CERTS_DIR"
