@@ -1,14 +1,23 @@
 #!/bin/bash
-# Generate self-signed certificates for the WebTransport relay
-# These certificates are valid for WebTransport with serverCertificateHashes
+# ── Development-only certificate generator ──────────────────────────────
+# Generates short-lived self-signed certificates for local/dev WebTransport.
+# Chrome/Chromium requires ≤14 days validity for serverCertificateHashes.
+#
+# For PRODUCTION, use Let's Encrypt (or any CA) certificates instead and
+# mount them into the container. See docker-compose.yml and README.md.
 
 set -e
 
 CERTS_DIR="${1:-./certs}"
-VALIDITY_DAYS=320  # Chrome requires ≤14 days for serverCertificateHashes
+VALIDITY_DAYS="${VALIDITY_DAYS:-10}"  # Max 14 for Chrome; 10 gives margin
 
-echo "Generating WebTransport certificates..."
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║  ⚠  DEVELOPMENT ONLY — Self-Signed Certificate Generator   ║"
+echo "║  For production, use Let's Encrypt / CA-signed certificates ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo ""
 echo "Output directory: $CERTS_DIR"
+echo "Validity: $VALIDITY_DAYS days"
 
 # Create certs directory if it doesn't exist
 mkdir -p "$CERTS_DIR"
@@ -16,16 +25,20 @@ mkdir -p "$CERTS_DIR"
 # Generate ECDSA P-256 key (required for short-lived certs in WebTransport)
 openssl ecparam -name prime256v1 -genkey -noout -out "$CERTS_DIR/relay-key.pem"
 
+# Build SAN list — always include localhost + common local addresses
+SAN="DNS:localhost,IP:127.0.0.1,IP:::1,DNS:relay,IP:10.0.2.2"
+if [ -n "$RELAY_DOMAIN" ]; then
+    SAN="${SAN},DNS:${RELAY_DOMAIN}"
+    echo "Including domain: $RELAY_DOMAIN"
+fi
+
 # Generate self-signed certificate
-# - Use ECDSA for better WebTransport compatibility
-# - Short validity (Chrome enforces ≤14 days for serverCertificateHashes)
-# - Add SANs for localhost and common local addresses
 openssl req -new -x509 \
     -key "$CERTS_DIR/relay-key.pem" \
     -out "$CERTS_DIR/relay-cert.pem" \
     -days "$VALIDITY_DAYS" \
     -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1,DNS:relay,IP:10.0.2.2"
+    -addext "subjectAltName=${SAN}"
 
 echo ""
 echo "✓ Generated certificates:"
@@ -42,7 +55,7 @@ CERT_HASH=$(openssl x509 -in "$CERTS_DIR/relay-cert.pem" -outform DER 2>/dev/nul
     sed 's/\(..\)/\1:/g' | \
     sed 's/:$//')
 
-echo "Certificate SHA-256 Hash (for WebTransport):"
+echo "Certificate SHA-256 Hash (for WebTransport serverCertificateHashes):"
 echo "$CERT_HASH"
 echo ""
 
@@ -52,14 +65,13 @@ echo "Hash without colons:"
 echo "$CERT_HASH_NO_COLONS"
 echo ""
 
-echo "To use these certificates:"
+# Show cert expiry
+EXPIRY=$(openssl x509 -in "$CERTS_DIR/relay-cert.pem" -noout -enddate 2>/dev/null | cut -d= -f2)
+echo "Expires: $EXPIRY"
 echo ""
-echo "1. Update docker-compose.yml NEXT_PUBLIC_RELAY_CERT_HASH with:"
-echo "   $CERT_HASH"
-echo ""
-echo "2. Or start the relay manually with:"
-echo "   cargo run --release -- --cert-pem $CERTS_DIR/relay-cert.pem --key-pem $CERTS_DIR/relay-key.pem"
-echo ""
-echo "Note: Certificates expire in $VALIDITY_DAYS days. Regenerate before expiry."
 
-
+echo "Usage:"
+echo "  cargo run --release -- --cert-pem $CERTS_DIR/relay-cert.pem --key-pem $CERTS_DIR/relay-key.pem"
+echo ""
+echo "⚠  These certs expire in $VALIDITY_DAYS days. Regenerate before expiry."
+echo "   For production, mount Let's Encrypt certs — see README.md"

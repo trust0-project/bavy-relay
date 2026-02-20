@@ -1,0 +1,7 @@
+target/
+certs/
+.git/
+.github/
+.DS_Store
+*.md
+scripts/

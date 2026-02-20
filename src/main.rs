@@ -77,7 +77,12 @@ async fn build_identity(args: &Args) -> Result<Identity> {
             "Loading TLS identity from PEM files: cert='{}', key='{}'",
             cert_pem, key_pem
         );
+
+        // Log the certificate expiry so operators know when rotation is needed
+        log_cert_expiry(cert_pem);
+
         let identity = Identity::load_pemfiles(cert_pem, key_pem).await?;
+        info!("✓ TLS certificate loaded (production mode)");
         Ok(identity)
     } else if args.cert_pem.is_some() || args.key_pem.is_some() {
         anyhow::bail!(
@@ -85,8 +90,32 @@ async fn build_identity(args: &Args) -> Result<Identity> {
              to use a custom certificate"
         );
     } else {
-        info!("No certificate/key provided; generating ephemeral self-signed identity");
+        warn!("══════════════════════════════════════════════════════════");
+        warn!("  No certificate provided — using ephemeral self-signed");
+        warn!("  This is suitable for DEVELOPMENT ONLY.");
+        warn!("  Browsers limit self-signed certs to ≤14 days validity.");
+        warn!("  For production, set RELAY_CERT_PEM and RELAY_KEY_PEM");
+        warn!("  to your Let's Encrypt / CA-signed certificate files.");
+        warn!("══════════════════════════════════════════════════════════");
         Ok(Identity::self_signed(["localhost", "127.0.0.1", "::1"])?)
+    }
+}
+
+/// Read the PEM certificate and log its expiry date.
+/// This is a best-effort log — parsing failures are silently ignored.
+fn log_cert_expiry(cert_path: &str) {
+    let Ok(pem_data) = std::fs::read_to_string(cert_path) else {
+        return;
+    };
+
+    // Parse the PEM to find the notAfter date.
+    // We look for the human-readable text that openssl embeds, or fall back to
+    // just reporting the file was loaded successfully.
+    // wtransport's Identity handles the actual crypto — this is purely informational.
+    if let Some(line) = pem_data.lines().find(|l| l.contains("Not After")) {
+        info!("Certificate expiry: {}", line.trim());
+    } else {
+        info!("Certificate loaded from {}", cert_path);
     }
 }
 
@@ -114,8 +143,10 @@ async fn main() -> Result<()> {
         .hash();
     // Format hash without colons for easy copy-paste
     let cert_hash_hex = format!("{}", cert_hash);
-    info!("Certificate Hash: {}", cert_hash_hex);
-    info!("Use this hash with --net-cert-hash when connecting");
+    info!("Certificate SHA-256 Hash: {}", cert_hash_hex);
+    if args.cert_pem.is_none() {
+        info!("Use this hash with serverCertificateHashes when connecting (dev mode)");
+    }
 
     // Create the central hub
     let hub = Arc::new(Hub::new());

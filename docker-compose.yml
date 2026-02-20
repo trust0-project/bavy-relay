@@ -1,0 +1,34 @@
+# docker-compose.yml — Relay server with TLS certificate management
+#
+# PRODUCTION: Mount Let's Encrypt (or any CA) certificates.
+#   The entrypoint watches the cert files and restarts the relay on renewal.
+#
+# DEVELOPMENT: Omit RELAY_CERT_PEM and RELAY_KEY_PEM to use an ephemeral
+#   self-signed certificate. The relay will print the cert hash on startup.
+
+services:
+  relay:
+    build: .
+    # image: trust0project/bavy-relay:latest   # or use pre-built image
+    ports:
+      - "4433:4433/udp"   # QUIC / WebTransport
+      - "4433:4433/tcp"   # HTTP/3 TCP fallback
+    environment:
+      # ── Production: CA-signed certificate (e.g. Let's Encrypt) ────────
+      # Uncomment and adjust paths to match your cert volume mount.
+      #
+      # RELAY_CERT_PEM: /certs/fullchain.pem
+      # RELAY_KEY_PEM: /certs/privkey.pem
+      # CERT_POLL_INTERVAL: "60"         # seconds between cert file checks
+
+      # ── Relay settings ────────────────────────────────────────────────
+      RUST_LOG: info
+
+    # ── Certificate volume ──────────────────────────────────────────────
+    # Mount Let's Encrypt live certs (certbot auto-renews on the host).
+    # The entrypoint detects file changes and restarts the relay automatically.
+    #
+    # volumes:
+    #   - /etc/letsencrypt/live/relay.yourdomain.com:/certs:ro
+
+    restart: unless-stopped
