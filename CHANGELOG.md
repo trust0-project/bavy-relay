@@ -8,6 +8,14 @@
 
 - Javier Ribó
 
+## [0.1.3](https://github.com/trust0-project/bavy-relay/compare/v0.1.2...v0.1.3) (2026-02-20)
+
+
+### Bug Fixes
+
+* remove certificates ([7d6474b](https://github.com/trust0-project/bavy-relay/commit/7d6474be38b50ea8517bc7aa6793996819c81bd1))
+* SSL CERTS ([0eb424d](https://github.com/trust0-project/bavy-relay/commit/0eb424d228b701e6786eb7d5fab68eb4405232ad))
+
 ## [0.1.2](https://github.com/trust0-project/bavy-relay/compare/v0.1.1...v0.1.2) (2025-12-10)
 
 
